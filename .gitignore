@@ -1,0 +1,7 @@
+x_state.json
+.env
+data/
+.venv/
+__pycache__/
+*.pyc
+trigger/
