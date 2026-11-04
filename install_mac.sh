@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-time setup on macOS: Python env, the crawler's own Chrome profile with your X login, and an on-demand
-# LaunchAgent. There is NO schedule on the Mac: the agent starts a crawl whenever the Claude
+# LaunchAgent. There is NO crawl schedule on the Mac: the agent starts a crawl whenever the Claude
 # scheduled task writes trigger/run-request (Mondays 08:00), so Claude's task is the only schedule.
+# The agent does wake every 30 s, but only to see whether that file changed (see trigger_check.sh).
 set -euo pipefail
 cd "$(dirname "$0")"; DIR="$(pwd)"
 LABEL="com.xweek.crawl"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -41,9 +42,10 @@ cat > "$PLIST" <<PL
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$DIR/run_weekly.sh</string></array>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$DIR/trigger_check.sh</string></array>
   <key>WorkingDirectory</key><string>$DIR</string>
   <key>WatchPaths</key><array><string>$DIR/trigger/run-request</string></array>
+  <key>StartInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>$DIR/data/run.log</string>
   <key>StandardErrorPath</key><string>$DIR/data/run.log</string>
   <key>EnvironmentVariables</key><dict>
@@ -52,6 +54,7 @@ cat > "$PLIST" <<PL
 </dict></plist>
 PL
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+bash trigger_check.sh --mark   # an old request must not start a crawl now
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo
 echo "Installed $LABEL. It runs a crawl whenever $DIR/trigger/run-request changes."

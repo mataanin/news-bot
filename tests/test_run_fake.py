@@ -11,7 +11,7 @@ from pathlib import Path
 import xweek.crawl as crawl
 from tests.fixtures import NOW, paged_timeline
 
-PAGE = """<!doctype html><html><body style="margin:0"><div id="tl"></div><script>
+PAGE = """<!doctype html><html><body style="margin:0"><a href="/home">Home</a><div id="tl"></div><script>
 const H = location.pathname.slice(1);
 let page = 0, loading = false, done = false;
 async function load() {
@@ -29,7 +29,7 @@ async function load() {
 window.addEventListener('scroll', () => { if (innerHeight + scrollY > document.body.scrollHeight - 1500) load(); });
 load();
 </script></body></html>"""
-MISSING = """<!doctype html><html><body><div data-testid="emptyState">This account doesn’t exist</div></body></html>"""
+MISSING = """<!doctype html><html><body><a href="/home">Home</a><div data-testid="emptyState">This account doesn’t exist</div></body></html>"""
 
 
 class FakeRun(unittest.TestCase):
@@ -84,6 +84,34 @@ class FakeRun(unittest.TestCase):
                       ", ".join(f"{h}={s['status']}/{s['kept']}/{s['seconds']}s" for h, s in stats.items()))
         finally:
             crawl.make_context = original
+
+    def test_stops_when_profiles_keep_timing_out(self):
+        """If X stops serving pages, the run must stop rather than try every account."""
+        calls = []
+        original = crawl.crawl_profile
+
+        async def blank(ctx, handle, since, max_scrolls, idle_rounds):
+            calls.append(handle)
+            return [], {"handle": handle, "status": "timeout", "scrolls": 0, "truncated": False,
+                        "rate_limited": False, "captured": 0, "kept": 0, "seconds": 0.0}
+
+        crawl.crawl_profile = blank
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                d = Path(d)
+                (d / "handles.txt").write_text("\n".join(f"user{i}" for i in range(20)))
+                (d / "state.json").write_text(json.dumps({"cookies": [], "origins": []}))
+                args = Namespace(handles=str(d / "handles.txt"), state=str(d / "state.json"), profile_dir=None,
+                                 since="2026-10-14", days=7, out_dir=str(d / "data"), concurrency=1, max_scrolls=30,
+                                 idle_rounds=4, backoff=1, headed=False, channel=None)
+                with self.assertRaises(SystemExit) as stop:
+                    asyncio.run(crawl.run(args))
+                self.assertIn("may be refusing", str(stop.exception))
+                stats = json.loads((d / "data" / "crawl-stats-2026-10-14.json").read_text())
+                self.assertEqual(len(stats), crawl.MAX_TIMEOUTS_IN_A_ROW)
+                self.assertEqual(len(calls), 2 * crawl.MAX_TIMEOUTS_IN_A_ROW)  # each account is tried twice
+        finally:
+            crawl.crawl_profile = original
 
 
 if __name__ == "__main__":

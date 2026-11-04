@@ -5,7 +5,7 @@ Sends posts to Claude in batches (default 40 per request, 4 requests in
 parallel) and forces a structured answer through a tool schema, so output is
 always valid JSON. Incremental: posts already in the tags file are skipped.
 
-  ANTHROPIC_API_KEY=... python -m xweek.tag data/posts-2026-10-14.jsonl
+  python -m xweek.tag data/posts-2026-10-14.jsonl                # API if ANTHROPIC_API_KEY is set, else Claude Code
   python -m xweek.tag data/posts-2026-10-14.jsonl --dry-run      # show one request, no API call
 """
 from __future__ import annotations
@@ -16,6 +16,8 @@ import json
 import os
 import sys
 from pathlib import Path
+
+from . import llm
 
 MODEL = os.environ.get("XWEEK_TAG_MODEL", "claude-sonnet-5-5")
 
@@ -80,26 +82,18 @@ def render(p: dict) -> str:
             f'{p["text"][:2000]}{quoted}{links}\n</post>')
 
 
-async def tag_batch(client, batch: list[dict], sem: asyncio.Semaphore) -> list[dict]:
+async def tag_batch(batch: list[dict], sem: asyncio.Semaphore) -> list[dict]:
     ids = {p["id"] for p in batch}
     async with sem:
-        msg = await client.messages.create(
-            model=MODEL, max_tokens=8000,
-            system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            tools=[TOOL], tool_choice={"type": "tool", "name": "record_tags"},
-            messages=[{"role": "user", "content": "\n\n".join(render(p) for p in batch)}],
-        )
-    out = []
-    for block in msg.content:
-        if block.type == "tool_use":
-            out = [t for t in block.input.get("posts", []) if t.get("id") in ids]
+        answer = await llm.structured(MODEL, SYSTEM, "\n\n".join(render(p) for p in batch), TOOL)
+    out = [t for t in answer.get("posts", []) if t.get("id") in ids]
     missing = ids - {t["id"] for t in out}
     if missing and len(batch) > 1:  # retry the posts the model skipped, in smaller batches
         rest = [p for p in batch if p["id"] in missing]
         half = max(1, len(rest) // 2)
         for chunk in (rest[:half], rest[half:]):
             if chunk:
-                out += await tag_batch(client, chunk, sem)
+                out += await tag_batch(chunk, sem)
     return out
 
 
@@ -112,22 +106,20 @@ async def main_async(args) -> None:
     todo = [p for p in posts if p["id"] not in done]
     batches = [todo[i:i + args.batch] for i in range(0, len(todo), args.batch)]
     print(f"{len(posts)} posts, {len(done)} already tagged, {len(todo)} to tag in {len(batches)} requests "
-          f"with {MODEL}", file=sys.stderr)
+          f"with {MODEL} via {llm.backend()}", file=sys.stderr)
     if args.dry_run:
         print(SYSTEM, "\n\n---\n", "\n\n".join(render(p) for p in (batches[0] if batches else [])))
         return
     if not batches:
         return
 
-    import anthropic  # imported here so --dry-run works without the SDK
-    client = anthropic.AsyncAnthropic(max_retries=6)
     sem = asyncio.Semaphore(args.concurrency)
     lock = asyncio.Lock()
     n_done = 0
 
     async def run_one(b):
         nonlocal n_done
-        tags = await tag_batch(client, b, sem)
+        tags = await tag_batch(b, sem)
         async with lock:
             with out_path.open("a") as f:
                 for t in tags:

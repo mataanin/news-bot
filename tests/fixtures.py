@@ -1,4 +1,5 @@
-"""Synthetic payloads shaped like X's UserTweets GraphQL response (no real data)."""
+"""Synthetic payloads shaped like X's timeline GraphQL responses and pages (no real data)."""
+import json
 from datetime import datetime, timedelta, timezone
 
 FMT = "%a %b %d %H:%M:%S +0000 %Y"
@@ -79,3 +80,53 @@ def paged_timeline(handle="alice", pages=5, per_page=6, hours_apart=10):
         pin = tweet(1, handle, NOW - timedelta(days=300), "old pin") if k == 0 else None
         out.append(payload(entries, pin=pin, more=k < pages - 1, dom=dom))
     return out
+
+
+def snowflake(when):
+    """A post id that encodes this time, as X's do."""
+    return (int(when.timestamp() * 1000) - 1288834974657) << 22
+
+
+def new_tweet(tid, handle, when, text, likes=10):
+    """The newer app's post shape: details/counts instead of legacy.full_text and legacy counts."""
+    return {
+        "__typename": "Tweet", "id": "VHdlZXQ6MQ==", "rest_id": str(tid),
+        "core": {"user_results": {"id": "x", "result": {"__typename": "User", "core": {"screen_name": handle}}}},
+        "counts": {"bookmark_count": 5, "favorite_count": likes, "quote_count": 4, "reply_count": 3, "retweet_count": 2},
+        "details": {"created_at_ms": int(when.timestamp() * 1000), "full_text": text},
+        "legacy": {"entities": {}, "lang": "en"},
+        "url_entities": [{"expanded_url": "https://example.com/new"}],
+        "views": {"count": "1234"},
+    }
+
+
+def new_payload(tweets):
+    entries = [{"entry_id": f"tweet-{t['rest_id']}", "content": {
+        "__typename": "TimelineTimelineItem", "content": {"__typename": "TimelineTweet", "tweet_results": {
+            "id": "x", "rest_id": t["rest_id"], "result": t}}}} for t in tweets]
+    return {"data": {"user_result_by_screen_name": {"result": {"profile_user_originals_timeline": {"timeline": {
+        "instructions": [{"__typename": "TimelineClearCache"},
+                         {"__typename": "TimelineAddEntries", "entries": entries}]}}}}}}
+
+
+def seroval(text):
+    """A JS string literal, the way seroval writes one: quotes escaped and < as \\x3C."""
+    return json.dumps(text, ensure_ascii=False).replace("<", "\\x3C")
+
+
+def tanstack_html(payload, body=""):
+    """A server-rendered document from the newer app, with the Relay response inside a seroval script."""
+    key = seroval('hash{"count":20,"cursor":null,"screenName":"alice"}')
+    script = (f'($R=>$R[21].next($R[23]={{kind:1,requestId:2,key:{key},'
+              f'result:$R[24]={{kind:"Result.Ok",value:{seroval(json.dumps(payload))}}}}}))($R["tsr"]);')
+    return f'<!doctype html><html><body>{body}<script nonce="n">{script}</script></body></html>'
+
+
+def new_article(tid, handle, text, replies=1, reposts=2, likes=5659, views=621327):
+    """The newer app's markup for a post (no data-testid, no <time>, rounded visible counts)."""
+    return f"""<li><div role="link" data-href="/{handle}/status/{tid}" data-navigation-stop=""><article>
+      <a href="/{handle}">{handle}</a><a href="/{handle}/status/{tid}">18h</a>
+      <div dir="auto"><span>{text}</span></div>
+      <div role="group" aria-label="{replies} replies, {reposts} reposts, {likes} likes, 7 bookmarks, {views} views">
+        <div data-engagement-action="like"><button aria-label="{likes} Likes. Like">5.6K</button></div></div>
+    </article></div></li>"""
